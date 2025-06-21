@@ -12,19 +12,6 @@ from psycopg2.extras import RealDictCursor
 app = Flask(__name__)
 CORS(app)
 
-# Добавляем обработчики CORS
-@app.after_request
-def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-    return response
-
-@app.before_request
-def handle_preflight():
-    if request.method == "OPTIONS":
-        return jsonify({"status": "ok"}), 200
-
 # Конфигурация
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'pixelgit_secret_2025')
 
@@ -32,8 +19,7 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'pixelgit_secret_2025')
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
 def get_db_connection():
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-    return conn
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
 
 # Создаем таблицы при первом запуске
 def init_db():
@@ -180,8 +166,13 @@ def register():
 
 @app.route('/users', methods=['GET'])
 def get_users():
+    current_user = request.args.get('current')
     users = execute_query("SELECT id, username FROM users", fetchall=True)
-    return jsonify(users), 200
+    
+    # Фильтруем текущего пользователя из списка
+    filtered_users = [user for user in users if user['username'] != current_user]
+    
+    return jsonify(filtered_users), 200
 
 @app.route('/chats', methods=['POST'])
 def create_chat():
@@ -375,6 +366,90 @@ def get_chat_messages(chat_id):
         msg['timestamp'] = msg['timestamp'].isoformat()
     
     return jsonify({'success': True, 'messages': messages}), 200
+
+# ======================
+# Новые функции
+# ======================
+
+@app.route('/update-username', methods=['POST'])
+def update_username():
+    data = request.get_json()
+    current_username = data.get('currentUsername')
+    new_username = data.get('newUsername')
+    
+    if not current_username or not new_username:
+        return jsonify({'success': False, 'message': 'Both usernames are required'}), 400
+    
+    # Проверяем существует ли новый username
+    existing_user = execute_query(
+        "SELECT * FROM users WHERE username = %s",
+        (new_username,),
+        fetchone=True
+    )
+    
+    if existing_user:
+        return jsonify({'success': False, 'message': 'Username already exists'}), 400
+    
+    # Обновляем имя пользователя
+    execute_query(
+        "UPDATE users SET username = %s WHERE username = %s",
+        (new_username, current_username),
+        commit=True
+    )
+    
+    return jsonify({'success': True, 'message': 'Username updated successfully'}), 200
+
+@app.route('/update-password', methods=['POST'])
+def update_password():
+    data = request.get_json()
+    username = data.get('username')
+    current_password = data.get('currentPassword')
+    new_password = data.get('newPassword')
+    
+    if not username or not current_password or not new_password:
+        return jsonify({'success': False, 'message': 'All fields are required'}), 400
+    
+    # Проверяем текущий пароль
+    user = execute_query(
+        "SELECT * FROM users WHERE username = %s",
+        (username,),
+        fetchone=True
+    )
+    
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    
+    if not check_password_hash(user['password'], current_password):
+        return jsonify({'success': False, 'message': 'Invalid current password'}), 401
+    
+    # Хешируем новый пароль
+    hashed_password = generate_password_hash(new_password)
+    
+    # Обновляем пароль
+    execute_query(
+        "UPDATE users SET password = %s WHERE username = %s",
+        (hashed_password, username),
+        commit=True
+    )
+    
+    return jsonify({'success': True, 'message': 'Password updated successfully'}), 200
+
+@app.route('/delete-account', methods=['DELETE'])
+def delete_account():
+    data = request.get_json()
+    username = data.get('username')
+    
+    if not username:
+        return jsonify({'success': False, 'message': 'Username is required'}), 400
+    
+    # Удаляем пользователя
+    execute_query(
+        "DELETE FROM users WHERE username = %s",
+        (username,),
+        commit=True
+    )
+    
+    return jsonify({'success': True, 'message': 'Account deleted successfully'}), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
