@@ -10,7 +10,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, supports_credentials=True, origins=["https://vitir0.github.io"])
 
 # Конфигурация
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'pixelgit_secret_2025')
