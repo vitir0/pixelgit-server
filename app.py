@@ -1,7 +1,6 @@
 import os
 import jwt
 import uuid
-import json
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -35,7 +34,8 @@ def init_db():
         id TEXT PRIMARY KEY,
         username TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
-        chats TEXT[]
+        chats TEXT[],
+        avatar TEXT
     );
     """)
     
@@ -127,7 +127,8 @@ def login():
     return jsonify({
         'success': True,
         'token': token,
-        'username': username
+        'username': username,
+        'avatar': user.get('avatar', '')
     }), 200
 
 @app.route('/register', methods=['POST'])
@@ -135,6 +136,7 @@ def register():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
+    avatar = data.get('avatar', '')
     
     if not username or not password:
         return jsonify({'success': False, 'message': 'Username and password are required'}), 400
@@ -153,21 +155,22 @@ def register():
     user_id = str(uuid.uuid4())
     
     execute_query(
-        "INSERT INTO users (id, username, password, chats) VALUES (%s, %s, %s, %s)",
-        (user_id, username, hashed_password, []),
+        "INSERT INTO users (id, username, password, chats, avatar) VALUES (%s, %s, %s, %s, %s)",
+        (user_id, username, hashed_password, [], avatar),
         commit=True
     )
     
     return jsonify({
         'success': True,
         'message': 'User registered successfully',
-        'userId': user_id
+        'userId': user_id,
+        'avatar': avatar
     }), 201
 
 @app.route('/users', methods=['GET'])
 def get_users():
     current_user = request.args.get('current')
-    users = execute_query("SELECT id, username FROM users", fetchall=True)
+    users = execute_query("SELECT id, username, avatar FROM users", fetchall=True)
     
     # Фильтруем текущего пользователя из списка
     filtered_users = [user for user in users if user['username'] != current_user]
@@ -263,9 +266,18 @@ def get_user_chats(username):
             participants = chat['participants']
             other_user = participants[0] if participants[1] == username else participants[1]
             
+            # Получаем аватар собеседника
+            other_user_data = execute_query(
+                "SELECT avatar FROM users WHERE username = %s",
+                (other_user,),
+                fetchone=True
+            )
+            avatar = other_user_data['avatar'] if other_user_data else ''
+            
             chat_list.append({
                 'id': chat_id,
                 'with_user': other_user,
+                'avatar': avatar,
                 'last_message': chat['last_message'],
                 'last_message_time': chat['last_message_time'].isoformat() if chat['last_message_time'] else None
             })
@@ -378,10 +390,6 @@ def get_chat_messages(chat_id):
     
     return jsonify({'success': True, 'messages': messages}), 200
 
-# ======================
-# Новые функции
-# ======================
-
 @app.route('/update-username', methods=['POST'])
 def update_username():
     data = request.get_json()
@@ -405,6 +413,13 @@ def update_username():
     execute_query(
         "UPDATE users SET username = %s WHERE username = %s",
         (new_username, current_username),
+        commit=True
+    )
+    
+    # Обновляем во всех чатах
+    execute_query(
+        "UPDATE chats SET participants = array_replace(participants, %s, %s)",
+        (current_username, new_username),
         commit=True
     )
     
@@ -445,17 +460,56 @@ def update_password():
     
     return jsonify({'success': True, 'message': 'Password updated successfully'}), 200
 
+@app.route('/update-avatar', methods=['POST'])
+def update_avatar():
+    data = request.get_json()
+    username = data.get('username')
+    avatar = data.get('avatar')  # base64 encoded image
+    
+    if not username or not avatar:
+        return jsonify({'success': False, 'message': 'Username and avatar are required'}), 400
+    
+    # Обновляем аватар
+    execute_query(
+        "UPDATE users SET avatar = %s WHERE username = %s",
+        (avatar, username),
+        commit=True
+    )
+    
+    return jsonify({'success': True, 'message': 'Avatar updated successfully'}), 200
+
 @app.route('/delete-account', methods=['DELETE'])
 def delete_account():
     data = request.get_json()
     username = data.get('username')
+    password = data.get('password')
     
-    if not username:
-        return jsonify({'success': False, 'message': 'Username is required'}), 400
+    if not username or not password:
+        return jsonify({'success': False, 'message': 'Username and password are required'}), 400
+    
+    # Проверяем пароль
+    user = execute_query(
+        "SELECT * FROM users WHERE username = %s",
+        (username,),
+        fetchone=True
+    )
+    
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    
+    if not check_password_hash(user['password'], password):
+        return jsonify({'success': False, 'message': 'Invalid password'}), 401
     
     # Удаляем пользователя
     execute_query(
         "DELETE FROM users WHERE username = %s",
+        (username,),
+        commit=True
+    )
+    
+    # Удаляем связанные данные
+    execute_query(
+        "DELETE FROM chats WHERE %s = ANY(participants)",
         (username,),
         commit=True
     )
