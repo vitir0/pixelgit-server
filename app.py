@@ -54,8 +54,10 @@ def init_db():
         id TEXT PRIMARY KEY,
         chat_id TEXT NOT NULL,
         sender TEXT NOT NULL,
-        text TEXT NOT NULL,
-        timestamp TIMESTAMPTZ DEFAULT NOW()
+        text TEXT,
+        timestamp TIMESTAMPTZ DEFAULT NOW(),
+        file_type TEXT,
+        file_data TEXT
     );
     """)
     
@@ -243,47 +245,6 @@ def create_chat():
         'chatId': chat_id
     }), 201
 
-@app.route('/chats/<username>', methods=['GET'])
-def get_user_chats(username):
-    user = execute_query(
-        "SELECT * FROM users WHERE username = %s",
-        (username,),
-        fetchone=True
-    )
-    
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found'}), 404
-    
-    chat_list = []
-    for chat_id in user['chats']:
-        chat = execute_query(
-            "SELECT * FROM chats WHERE id = %s",
-            (chat_id,),
-            fetchone=True
-        )
-        
-        if chat:
-            participants = chat['participants']
-            other_user = participants[0] if participants[1] == username else participants[1]
-            
-            # Получаем аватар собеседника
-            other_user_data = execute_query(
-                "SELECT avatar FROM users WHERE username = %s",
-                (other_user,),
-                fetchone=True
-            )
-            avatar = other_user_data['avatar'] if other_user_data else ''
-            
-            chat_list.append({
-                'id': chat_id,
-                'with_user': other_user,
-                'avatar': avatar,
-                'last_message': chat['last_message'],
-                'last_message_time': chat['last_message_time'].isoformat() if chat['last_message_time'] else None
-            })
-    
-    return jsonify({'success': True, 'chats': chat_list}), 200
-
 @app.route('/chats/<chat_id>/key', methods=['GET', 'POST'])
 def handle_encryption_key(chat_id):
     if request.method == 'GET':
@@ -321,8 +282,10 @@ def send_message():
     chat_id = data.get('chatId')
     sender = data.get('sender')
     text = data.get('text')
+    file_type = data.get('file_type')
+    file_data = data.get('file_data')
     
-    if not chat_id or not sender or not text:
+    if not chat_id or not sender or (not text and not file_data):
         return jsonify({'success': False, 'message': 'Missing required fields'}), 400
     
     chat = execute_query(
@@ -337,22 +300,27 @@ def send_message():
     if sender not in chat['participants']:
         return jsonify({'success': False, 'message': 'User not in chat'}), 403
     
+    # Проверка размера файла (4MB)
+    if file_data and len(file_data) > 4 * 1024 * 1024:
+        return jsonify({'success': False, 'message': 'File size exceeds 4MB'}), 400
+    
     # Создаем сообщение
     message_id = str(uuid.uuid4())
     timestamp = datetime.now(timezone.utc)
     
     execute_query(
-        "INSERT INTO messages (id, chat_id, sender, text, timestamp) "
-        "VALUES (%s, %s, %s, %s, %s)",
-        (message_id, chat_id, sender, text, timestamp),
+        "INSERT INTO messages (id, chat_id, sender, text, timestamp, file_type, file_data) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (message_id, chat_id, sender, text, timestamp, file_type, file_data),
         commit=True
     )
     
     # Обновляем последнее сообщение в чате
+    last_msg = "📷 Photo" if file_type == 'image' else "🎬 Video" if file_type == 'video' else text
     execute_query(
         "UPDATE chats SET last_message = %s, last_message_time = %s "
         "WHERE id = %s",
-        ("🔒 Encrypted message", timestamp, chat_id),
+        (last_msg, timestamp, chat_id),
         commit=True
     )
     
@@ -384,11 +352,44 @@ def get_chat_messages(chat_id):
     if not messages:
         return jsonify({'success': True, 'messages': []}), 200
     
-    # Конвертируем datetime в строки
+    # Добавляем аватары отправителей
     for msg in messages:
         msg['timestamp'] = msg['timestamp'].isoformat()
+        user = execute_query(
+            "SELECT avatar FROM users WHERE username = %s",
+            (msg['sender'],),
+            fetchone=True
+        )
+        msg['avatar'] = user['avatar'] if user else ''
     
     return jsonify({'success': True, 'messages': messages}), 200
+
+@app.route('/delete-message/<message_id>', methods=['DELETE'])
+def delete_message(message_id):
+    # Удаляем сообщение
+    execute_query(
+        "DELETE FROM messages WHERE id = %s",
+        (message_id,),
+        commit=True
+    )
+    
+    return jsonify({'success': True, 'message': 'Message deleted'}), 200
+
+@app.route('/delete-chat/<chat_id>', methods=['DELETE'])
+def delete_chat(chat_id):
+    # Удаляем все связанные данные
+    execute_query("DELETE FROM messages WHERE chat_id = %s", (chat_id,), commit=True)
+    execute_query("DELETE FROM encryption_keys WHERE chat_id = %s", (chat_id,), commit=True)
+    execute_query("DELETE FROM chats WHERE id = %s", (chat_id,), commit=True)
+    
+    # Удаляем chat_id из пользователей
+    execute_query(
+        "UPDATE users SET chats = array_remove(chats, %s)",
+        (chat_id,),
+        commit=True
+    )
+    
+    return jsonify({'success': True, 'message': 'Chat deleted'}), 200
 
 @app.route('/update-username', methods=['POST'])
 def update_username():
@@ -487,7 +488,7 @@ def delete_account():
     if not username or not password:
         return jsonify({'success': False, 'message': 'Username and password are required'}), 400
     
-    # Проверяем пароль
+    # Находим пользователя по username
     user = execute_query(
         "SELECT * FROM users WHERE username = %s",
         (username,),
@@ -500,10 +501,12 @@ def delete_account():
     if not check_password_hash(user['password'], password):
         return jsonify({'success': False, 'message': 'Invalid password'}), 401
     
-    # Удаляем пользователя
+    user_id = user['id']
+    
+    # Удаляем пользователя по ID
     execute_query(
-        "DELETE FROM users WHERE username = %s",
-        (username,),
+        "DELETE FROM users WHERE id = %s",
+        (user_id,),
         commit=True
     )
     
