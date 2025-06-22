@@ -352,14 +352,25 @@ def send_message():
 
 @app.route('/messages/<chat_id>', methods=['GET'])
 def get_chat_messages(chat_id):
+    # Проверяем существование чата
+    chat = execute_query(
+        "SELECT * FROM chats WHERE id = %s",
+        (chat_id,),
+        fetchone=True
+    )
+    
+    if not chat:
+        return jsonify({'success': False, 'message': 'Chat not found'}), 404
+    
     messages = execute_query(
         "SELECT * FROM messages WHERE chat_id = %s ORDER BY timestamp",
         (chat_id,),
         fetchall=True
     )
     
+    # Возвращаем пустой массив если сообщений нет
     if not messages:
-        return jsonify({'success': False, 'message': 'Chat not found'}), 404
+        return jsonify({'success': True, 'messages': []}), 200
     
     # Конвертируем datetime в строки
     for msg in messages:
