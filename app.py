@@ -7,7 +7,6 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
 from psycopg2.extras import RealDictCursor
-import threading
 
 app = Flask(__name__)
 CORS(app)
@@ -16,101 +15,65 @@ CORS(app)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'pixelgit_secret_2025')
 
 # Подключение к PostgreSQL
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://default:password@localhost:5432/pixelgit_db')
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, sslmode='require')
-
-# Проверка существования таблиц
-def check_tables_exist():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_name = 'users'
-            )
-        """)
-        users_exists = cur.fetchone()[0]
-        
-        if not users_exists:
-            init_db()
-            return
-        
-        # Проверяем остальные таблицы
-        for table in ['chats', 'messages', 'encryption_keys']:
-            cur.execute(f"""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = '{table}'
-                )
-            """)
-            if not cur.fetchone()[0]:
-                init_db()
-                return
-    except Exception as e:
-        print(f"Error checking tables: {e}")
-        init_db()
-    finally:
-        cur.close()
-        conn.close()
 
 # Создаем таблицы при первом запуске
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    try:
-        cur.execute("""
-        CREATE TABLE users (
-            id TEXT PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            chats TEXT[],
-            avatar TEXT
-        );
-        """)
-        
-        cur.execute("""
-        CREATE TABLE chats (
-            id TEXT PRIMARY KEY,
-            participants TEXT[] NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            last_message TEXT,
-            last_message_time TIMESTAMPTZ
-        );
-        """)
-        
-        cur.execute("""
-        CREATE TABLE messages (
-            id TEXT PRIMARY KEY,
-            chat_id TEXT NOT NULL,
-            sender TEXT NOT NULL,
-            text TEXT,
-            timestamp TIMESTAMPTZ DEFAULT NOW(),
-            file_type TEXT,
-            file_data TEXT
-        );
-        """)
-        
-        cur.execute("""
-        CREATE TABLE encryption_keys (
-            chat_id TEXT PRIMARY KEY,
-            key TEXT NOT NULL
-        );
-        """)
-        
-        conn.commit()
-        print("Database tables initialized successfully.")
-    except Exception as e:
-        print(f"Error initializing database: {e}")
-        conn.rollback()
-    finally:
-        cur.close()
-        conn.close()
+    
+    # Удаляем старые таблицы если существуют
+    cur.execute("DROP TABLE IF EXISTS messages, chats, users, encryption_keys;")
+    
+    # Создаем таблицы
+    cur.execute("""
+    CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        chats TEXT[],
+        avatar TEXT
+    );
+    """)
+    
+    cur.execute("""
+    CREATE TABLE chats (
+        id TEXT PRIMARY KEY,
+        participants TEXT[] NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        last_message TEXT,
+        last_message_time TIMESTAMPTZ
+    );
+    """)
+    
+    cur.execute("""
+    CREATE TABLE messages (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        text TEXT,
+        timestamp TIMESTAMPTZ DEFAULT NOW(),
+        file_type TEXT,
+        file_data TEXT
+    );
+    """)
+    
+    cur.execute("""
+    CREATE TABLE encryption_keys (
+        chat_id TEXT PRIMARY KEY,
+        key TEXT NOT NULL
+    );
+    """)
+    
+    conn.commit()
+    cur.close()
+    conn.close()
 
-# Проверяем/инициализируем таблицы при запуске
-check_tables_exist()
+# Инициализируем БД при старте
+init_db()
 
 # Вспомогательные функции для работы с БД
 def execute_query(query, params=None, fetchone=False, fetchall=False, commit=False):
