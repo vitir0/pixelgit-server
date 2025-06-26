@@ -35,7 +35,8 @@ def init_db():
         username TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
         chats TEXT[],
-        avatar TEXT
+        avatar TEXT,
+        email TEXT
     );
     """)
     
@@ -138,7 +139,8 @@ def register():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
-    avatar = data.get('avatar', '')
+    email = data.get('email', '')
+    avatar = data.get('avatar', 'https://api.dicebear.com/7.x/identicon/svg?seed=default&scale=80')
     
     if not username or not password:
         return jsonify({'success': False, 'message': 'Username and password are required'}), 400
@@ -157,14 +159,22 @@ def register():
     user_id = str(uuid.uuid4())
     
     execute_query(
-        "INSERT INTO users (id, username, password, chats, avatar) VALUES (%s, %s, %s, %s, %s)",
-        (user_id, username, hashed_password, [], avatar),
+        "INSERT INTO users (id, username, password, chats, avatar, email) VALUES (%s, %s, %s, %s, %s, %s)",
+        (user_id, username, hashed_password, [], avatar, email),
         commit=True
     )
+    
+    # Создаем JWT токен для нового пользователя
+    payload = {
+        'sub': username,
+        'exp': datetime.now(timezone.utc) + timedelta(hours=24)
+    }
+    token = jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
     
     return jsonify({
         'success': True,
         'message': 'User registered successfully',
+        'token': token,
         'userId': user_id,
         'avatar': avatar
     }), 201
