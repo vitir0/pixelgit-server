@@ -189,6 +189,44 @@ def get_users():
     
     return jsonify(filtered_users), 200
 
+# Новый эндпоинт для получения чатов пользователя
+@app.route('/chats/<username>', methods=['GET'])
+def get_user_chats(username):
+    # Найти все чаты пользователя
+    chats = execute_query(
+        "SELECT * FROM chats WHERE %s = ANY(participants)",
+        (username,),
+        fetchall=True
+    )
+    
+    if not chats:
+        return jsonify({'success': True, 'chats': []}), 200
+
+    enriched_chats = []
+    for chat in chats:
+        # Участники чата
+        participants = chat['participants']
+        # Найти собеседника (не текущий username)
+        other_user = participants[0] if participants[1] == username else participants[1]
+        
+        # Получить аватар собеседника
+        user_info = execute_query(
+            "SELECT avatar FROM users WHERE username = %s",
+            (other_user,),
+            fetchone=True
+        )
+        avatar = user_info['avatar'] if user_info else ''
+        
+        enriched_chats.append({
+            'id': chat['id'],
+            'with_user': other_user,
+            'last_message': chat['last_message'],
+            'last_message_time': chat['last_message_time'],
+            'avatar': avatar
+        })
+    
+    return jsonify({'success': True, 'chats': enriched_chats}), 200
+
 @app.route('/chats', methods=['POST'])
 def create_chat():
     data = request.get_json()
@@ -334,10 +372,18 @@ def send_message():
         commit=True
     )
     
+    # Возвращаем полную информацию о сообщении
     return jsonify({
         'success': True,
-        'message': 'Message sent successfully',
-        'messageId': message_id
+        'message': {
+            'id': message_id,
+            'chat_id': chat_id,
+            'sender': sender,
+            'text': text,
+            'timestamp': timestamp.isoformat(),
+            'file_type': file_type,
+            'file_data': file_data
+        }
     }), 201
 
 @app.route('/messages/<chat_id>', methods=['GET'])
